@@ -11,19 +11,7 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Kiểm tra xem cấu trúc bảng cũ hay mới. Nếu là bảng cũ (thiếu contract_name), ta xóa đi tạo lại
-    try:
-        c.execute("SELECT contract_name FROM shipments LIMIT 1")
-    except sqlite3.OperationalError:
-        # Nếu lỗi nghĩa là bảng cũ không có cột này -> Đóng kết nối và xóa file DB cũ để làm mới
-        conn.close()
-        if os.path.exists(DB_NAME):
-            os.remove(DB_NAME)
-        # Mở lại kết nối mới
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-
-    # Bảng lưu thông tin chung hợp đồng
+    # 1. Tạo bảng shipments nếu chưa có
     c.execute('''
         CREATE TABLE IF NOT EXISTS shipments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +24,8 @@ def init_db():
             completed_date DATE
         )
     ''')
-    # Bảng lưu trạng thái các bước check-list
+    
+    # 2. Tạo bảng tasks nếu chưa có
     c.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,12 +36,18 @@ def init_db():
             FOREIGN KEY(contract_name) REFERENCES shipments(contract_name) ON DELETE CASCADE
         )
     ''')
+    
+    # 3. Tự động nâng cấp cột ha_cont nếu chưa có
+    try:
+        c.execute("SELECT ha_cont FROM shipments LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE shipments ADD COLUMN ha_cont TEXT")
+        
     conn.commit()
     conn.close()
 
 def get_active_shipments():
     conn = sqlite3.connect(DB_NAME)
-    # Lấy các hợp đồng chưa hoàn thành HOẶC đã hoàn thành nhưng chưa quá 3 ngày
     three_days_ago = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     query = f"""
         SELECT * FROM shipments 
@@ -63,12 +58,26 @@ def get_active_shipments():
     conn.close()
     return df
 
-def create_shipment(contract_name, cargo_name, booking, vessel, eta):
+def get_categories_for_contract(contract_name):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT category FROM tasks WHERE contract_name = ?", (contract_name,))
+    cats = [r[0] for r in c.fetchall()]
+    conn.close()
+    
+    # Đảm bảo luôn có các hạng mục mặc định nếu chưa có
+    default_cats = ["Kiểm dịch thực vật", "Làm SI VGM", "Certificate of Origin (C/O)", "Gửi chứng từ"]
+    for dc in default_cats:
+        if dc not in cats:
+            cats.append(dc)
+    return cats
+
+def create_shipment(contract_name, cargo_name, booking, vessel, eta, ha_cont):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO shipments (contract_name, cargo_name, booking_no, vessel, eta) VALUES (?, ?, ?, ?, ?)", 
-                  (contract_name, cargo_name, booking, vessel, eta))
+        c.execute("INSERT INTO shipments (contract_name, cargo_name, booking_no, vessel, eta, ha_cont) VALUES (?, ?, ?, ?, ?, ?)", 
+                  (contract_name, cargo_name, booking, vessel, eta, ha_cont))
         
         # Tự động tạo checklist mặc định ban đầu
         default_tasks = {
@@ -109,12 +118,20 @@ with st.sidebar.form("new_shipment_form", clear_on_submit=True):
     new_name = st.text_input("Tên hàng hóa *:")
     new_booking = st.text_input("Số Booking / B/L (Nếu có):")
     new_vessel = st.text_input("Tên Tàu / Số chuyến:")
+    
+    # Menu chọn Cảng hạ Cont linh hoạt
+    cang_options = ["Cát Lái", "SPITC", "Hiệp Phước", "Tân Cảng Hiệp Phước", "Đà Nẵng", "Hải Phòng", "Khác (Nhập tay bên dưới)"]
+    selected_cang = st.selectbox("Chọn Cảng hạ Cont:", cang_options)
+    custom_cang = st.text_input("Nếu chọn 'Khác', nhập tên cảng vào đây:")
+    
+    final_ha_cont = custom_cang.strip() if selected_cang == "Khác (Nhập tay bên dưới)" else selected_cang
+
     new_eta = st.date_input("Ngày dự kiến đến (ETA):", datetime.now())
     submit_btn = st.form_submit_button("Tạo hợp đồng")
     
     if submit_btn:
         if new_contract and new_name:
-            if create_shipment(new_contract, new_name, new_booking, new_vessel, new_eta.strftime('%Y-%m-%d')):
+            if create_shipment(new_contract, new_name, new_booking, new_vessel, new_eta.strftime('%Y-%m-%d'), final_ha_cont):
                 st.sidebar.success(f"Đã thêm hợp đồng: {new_contract}")
                 st.rerun()
             else:
@@ -135,53 +152,59 @@ else:
     
     for _, row in shipments_df.iterrows():
         ct = row['contract_name']
-        categories = ["Kiểm dịch thực vật", "Làm SI VGM", "Certificate of Origin (C/O)", "Gửi chứng từ"]
-        status_colors = {}
+        
+        # Lấy động tất cả hạng mục lớn của riêng hợp đồng này để kiểm tra tiến độ tổng quan
+        categories = get_categories_for_contract(ct)
+        status_list = []
         
         for cat in categories:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM tasks WHERE contract_name = ? AND category = ? AND is_done = 0", (ct, cat))
             not_done_count = c.fetchone()[0]
-            status_colors[cat] = "🟢 Xong" if not_done_count == 0 else "🔴 Chưa xong"
+            if not_done_count > 0:
+                status_list.append(f"{cat}: 🔴")
+            else:
+                status_list.append(f"{cat}: 🟢")
+                
+        status_string = " | ".join(status_list)
             
         display_data.append({
             "Tên Hợp Đồng": ct,
             "Tên Hàng": row['cargo_name'],
             "Số Booking": row['booking_no'],
             "Tên Tàu": row['vessel'],
+            "Nơi Hạ Cont": row['ha_cont'] if ('ha_cont' in row and row['ha_cont']) else "---",
             "Ngày ETA": row['eta'],
-            "Kiểm Dịch": status_colors["Kiểm dịch thực vật"],
-            "SI VGM": status_colors["Làm SI VGM"],
-            "C/O": status_colors["Certificate of Origin (C/O)"],
-            "Chứng Từ": status_colors["Gửi chứng từ"],
+            "Tiến độ các Hạng mục": status_string,
             "Trạng thái": "✅ Hoàn tất" if row['is_completed'] == 1 else "⏳ Đang chạy"
         })
     conn.close()
     
     st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
 
-    # --- PHẦN XỬ LÝ CHI TIẾT VÀ TỰ THÊM MỤC ---
+    # --- PHẦN XỬ LÝ CHI TIẾT VÀ TỰ THÊM MỤC CHÍNH/PHỤ ---
     st.markdown("---")
-    st.subheader("🔍 Cập nhật & Tự thêm bước tiến độ")
+    st.subheader("🔍 Cập nhật & Tự chỉnh sửa cấu trúc tiến độ")
     
     selected_contract = st.selectbox("Chọn Hợp Đồng cần cập nhật hoặc thêm mục:", shipments_df['contract_name'].tolist())
     
     if selected_contract:
         shipment_info = shipments_df[shipments_df['contract_name'] == selected_contract].iloc[0]
-        st.markdown(f"Đang xem: **{selected_contract}** ({shipment_info['cargo_name']}) | Tàu: **{shipment_info['vessel']}** | ETA: **{shipment_info['eta']}**")
+        info_ha_cont = shipment_info['ha_cont'] if ('ha_cont' in shipment_info and shipment_info['ha_cont']) else "---"
+        st.markdown(f"Đang xem: **{selected_contract}** ({shipment_info['cargo_name']}) | Tàu: **{shipment_info['vessel']}** | **Nơi Hạ Cont: {info_ha_cont}** | ETA: **{shipment_info['eta']}**")
         
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         
-        categories = ["Kiểm dịch thực vật", "Làm SI VGM", "Certificate of Origin (C/O)", "Gửi chứng từ"]
+        # Lấy danh sách hạng mục thực tế (bao gồm cả hạng mục do user tự thêm)
+        categories = get_categories_for_contract(selected_contract)
         
         # Form chính quản lý checklist
         with st.form("checklist_form"):
             all_checkboxes = {}
             
             for cat in categories:
-                with st.expander(f"📁 Hạng mục: {cat}"):
-                    # Lấy danh sách các task hiện tại
+                with st.expander(f"📁 Hạng mục lớn: {cat}"):
                     c.execute("SELECT id, task_name, is_done FROM tasks WHERE contract_name = ? AND category = ?", (selected_contract, cat))
                     tasks = c.fetchall()
                     
@@ -189,7 +212,7 @@ else:
                         for task_id, task_name, is_done in tasks:
                             all_checkboxes[task_id] = st.checkbox(task_name, value=bool(is_done), key=f"task_{task_id}")
                     else:
-                        st.write("*Chưa có bước nào trong mục này.*")
+                        st.write("*Hạng mục này chưa có bước thực hiện nào.*")
                         
             save_changes = st.form_submit_button("💾 Lưu cập nhật tiến độ")
             
@@ -200,11 +223,11 @@ else:
                 c.execute("SELECT COUNT(*) FROM tasks WHERE contract_name = ? AND is_done = 0", (selected_contract,))
                 remaining_tasks = c.fetchone()[0]
                 
-                if remaining_tasks == 0:
+                if remaining_tasks == 0 and len(all_checkboxes) > 0:
                     if shipment_info['is_completed'] == 0:
                         today = datetime.now().strftime('%Y-%m-%d')
                         c.execute("UPDATE shipments SET is_completed = 1, completed_date = ? WHERE contract_name = ?", (today, selected_contract))
-                        st.success("🎉 Xuất sắc! Hợp đồng này đã hoàn tất toàn bộ quy trình và sẽ ẩn sau 3 ngày.")
+                        st.success("🎉 Xuất sắc! Hợp đồng này đã hoàn tất toàn bộ quy trình.")
                 else:
                     c.execute("UPDATE shipments SET is_completed = 0, completed_date = NULL WHERE contract_name = ?", (selected_contract,))
                     st.success("🔄 Đã cập nhật trạng thái thành công!")
@@ -212,22 +235,38 @@ else:
                 conn.commit()
                 st.rerun()
 
-        # Phần Form phụ: Cho phép tự ý thêm bước mới
-        st.write("✨ **Bạn muốn bổ sung thêm bước mới vào hợp đồng này?**")
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            target_cat = st.selectbox("Chọn hạng mục muốn thêm bước:", categories, key="target_cat")
-            new_task_name = st.text_input("Nhập tên bước cần thêm (Ví dụ: Nộp lệ phí, Gửi sếp duyệt...):", key="new_task_name")
-        with col2:
-            st.write("##") 
-            add_btn = st.button("➕ Thêm bước mới vào mục này")
-            
-        if add_btn:
-            if new_task_name.strip():
+        # THAY ĐỔI LỚN: Khu vực tùy biến cấu trúc linh hoạt theo ý muốn
+        st.write("🛠️ **Khu vực quản lý bổ sung mục (Dành riêng cho hợp đồng này):**")
+        
+        tab1, tab2 = st.tabs(["➕ Thêm Bước nhỏ (vào mục có sẵn)", "🗂️ Thêm Hạng mục LỚN hoàn toàn mới"])
+        
+        with tab1:
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                target_cat = st.selectbox("Chọn hạng mục lớn muốn thêm bước:", categories, key="target_cat")
+                new_task_name = st.text_input("Tên bước cần thêm (Ví dụ: Đã nộp lệ phí...):", key="new_task_name")
+            with col2:
+                st.write("##")
+                add_task_btn = st.button("Thêm bước nhỏ", key="add_task_btn")
+                
+            if add_task_btn and new_task_name.strip():
                 add_custom_task(selected_contract, target_cat, new_task_name.strip())
-                st.success(f"Đã thêm bước '{new_task_name}' vào mục '{target_cat}' thành công!")
+                st.success(f"Đã thêm bước nhỏ thành công!")
                 st.rerun()
-            else:
-                st.error("Vui lòng điền tên bước cần thêm!")
+                
+        with tab2:
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                new_main_cat = st.text_input("Nhập tên Hạng Mục Lớn mới (Ví dụ: Kiểm tra chuyên ngành, Khai hải quan...):", key="new_main_cat")
+                first_task = st.text_input("Tạo bước công việc đầu tiên cho mục này:", value="Bắt đầu triển khai", key="first_task")
+            with col2:
+                st.write("##")
+                st.write("##")
+                add_cat_btn = st.button("Tạo Hạng Mục Lớn", key="add_cat_btn")
+                
+            if add_cat_btn and new_main_cat.strip() and first_task.strip():
+                add_custom_task(selected_contract, new_main_cat.strip(), first_task.strip())
+                st.success(f"Đã tạo thành công Hạng mục lớn '{new_main_cat}'!")
+                st.rerun()
                 
         conn.close()
