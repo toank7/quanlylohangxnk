@@ -167,7 +167,7 @@ else:
             
             for cat in categories:
                 with st.expander(f"📁 Hạng mục: {cat}"):
-                    # Lấy danh sách các task hiện tại (gồm cả các task tự thêm sau này)
+                    # Lấy danh sách các task hiện tại
                     c.execute("SELECT id, task_name, is_done FROM tasks WHERE contract_name = ? AND category = ?", (selected_contract, cat))
                     tasks = c.fetchall()
                     
@@ -180,4 +180,40 @@ else:
             save_changes = st.form_submit_button("💾 Lưu cập nhật tiến độ")
             
             if save_changes:
-                for t_id, checked in
+                for t_id, checked in all_checkboxes.items():
+                    c.execute("UPDATE tasks SET is_done = ? WHERE id = ?", (1 if checked else 0, t_id))
+                
+                c.execute("SELECT COUNT(*) FROM tasks WHERE contract_name = ? AND is_done = 0", (selected_contract,))
+                remaining_tasks = c.fetchone()[0]
+                
+                if remaining_tasks == 0:
+                    if shipment_info['is_completed'] == 0:
+                        today = datetime.now().strftime('%Y-%m-%d')
+                        c.execute("UPDATE shipments SET is_completed = 1, completed_date = ? WHERE contract_name = ?", (today, selected_contract))
+                        st.success("🎉 Xuất sắc! Hợp đồng này đã hoàn tất toàn bộ quy trình và sẽ ẩn sau 3 ngày.")
+                else:
+                    c.execute("UPDATE shipments SET is_completed = 0, completed_date = NULL WHERE contract_name = ?", (selected_contract,))
+                    st.success("🔄 Đã cập nhật trạng thái thành công!")
+                
+                conn.commit()
+                st.rerun()
+
+        # Phần Form phụ: Cho phép tự ý thêm bước mới
+        st.write("✨ **Bạn muốn bổ sung thêm bước mới vào hợp đồng này?**")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            target_cat = st.selectbox("Chọn hạng mục muốn thêm bước:", categories, key="target_cat")
+            new_task_name = st.text_input("Nhập tên bước cần thêm (Ví dụ: Nộp lệ phí, Gửi sếp duyệt...):", key="new_task_name")
+        with col2:
+            st.write("##") 
+            add_btn = st.button("➕ Thêm bước mới vào mục này")
+            
+        if add_btn:
+            if new_task_name.strip():
+                add_custom_task(selected_contract, target_cat, new_task_name.strip())
+                st.success(f"Đã thêm bước '{new_task_name}' vào mục '{target_cat}' thành công!")
+                st.rerun()
+            else:
+                st.error("Vui lòng điền tên bước cần thêm!")
+                
+        conn.close()
