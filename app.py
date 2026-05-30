@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
+import os
 from datetime import datetime, timedelta
 
 # --- CẤU HÌNH CƠ SỞ DỮ LIỆU ---
@@ -9,6 +10,19 @@ DB_NAME = "logistic_tracker.db"
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    
+    # Kiểm tra xem cấu trúc bảng cũ hay mới. Nếu là bảng cũ (thiếu contract_name), ta xóa đi tạo lại
+    try:
+        c.execute("SELECT contract_name FROM shipments LIMIT 1")
+    except sqlite3.OperationalError:
+        # Nếu lỗi nghĩa là bảng cũ không có cột này -> Đóng kết nối và xóa file DB cũ để làm mới
+        conn.close()
+        if os.path.exists(DB_NAME):
+            os.remove(DB_NAME)
+        # Mở lại kết nối mới
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+
     # Bảng lưu thông tin chung hợp đồng
     c.execute('''
         CREATE TABLE IF NOT EXISTS shipments (
@@ -112,7 +126,7 @@ with st.sidebar.form("new_shipment_form", clear_on_submit=True):
 shipments_df = get_active_shipments()
 
 if shipments_df.empty:
-    st.info("Hiện tại không có hợp đồng nào đang xử lý.")
+    st.info("Hiện tại không có hợp đồng nào đang xử lý. Bạn hãy thêm hợp đồng mới ở thanh bên trái nhé!")
 else:
     st.subheader("📋 Danh sách hợp đồng đang thực hiện")
     
