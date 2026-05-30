@@ -115,7 +115,7 @@ st.sidebar.header("➕ Thêm Hợp Đồng Mới")
 with st.sidebar.form("new_shipment_form", clear_on_submit=True):
     new_contract = st.text_input("Tên/Số Hợp Đồng *:")
     
-    # THAY ĐỔI LỚN: Menu chọn Tên hàng hóa mặc định linh hoạt
+    # Menu chọn Tên hàng hóa mặc định linh hoạt
     hang_options = [
         "Gạo (Rice)", 
         "Nông sản (Agricultural Products)", 
@@ -129,7 +129,6 @@ with st.sidebar.form("new_shipment_form", clear_on_submit=True):
     ]
     selected_cargo = st.selectbox("Chọn Tên hàng hóa *:", hang_options)
     custom_cargo = st.text_input("Nếu chọn 'Khác', nhập tên hàng hóa vào đây:")
-    
     final_cargo_name = custom_cargo.strip() if selected_cargo == "Khác (Nhập tay bên dưới)" else selected_cargo
 
     new_booking = st.text_input("Số Booking / B/L (Nếu có):")
@@ -139,7 +138,6 @@ with st.sidebar.form("new_shipment_form", clear_on_submit=True):
     cang_options = ["Cát Lái", "SPITC", "Hiệp Phước", "Tân Cảng Hiệp Phước", "Đà Nẵng", "Hải Phòng", "Khác (Nhập tay bên dưới)"]
     selected_cang = st.selectbox("Chọn Cảng hạ Cont:", cang_options)
     custom_cang = st.text_input("Nếu chọn 'Khác', nhập tên cảng vào đây:")
-    
     final_ha_cont = custom_cang.strip() if selected_cang == "Khác (Nhập tay bên dưới)" else selected_cang
 
     new_eta = st.date_input("Ngày dự kiến đến (ETA):", datetime.now())
@@ -194,12 +192,4 @@ else:
         })
     conn.close()
     
-    st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
-
-    # --- PHẦN XỬ LÝ CHI TIẾT VÀ TỰ THÊM MỤC CHÍNH/PHỤ ---
-    st.markdown("---")
-    st.subheader("🔍 Cập nhật & Tự chỉnh sửa cấu trúc tiến độ")
-    
-    selected_contract = st.selectbox("Chọn Hợp Đồng cần cập nhật hoặc thêm mục:", shipments_df['contract_name'].tolist())
-    
-    if selected_
+    st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True
