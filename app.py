@@ -37,7 +37,7 @@ def init_db():
         )
     ''')
     
-    # 3. Tự động nâng cấp cột ha_cont nếu chưa có
+    # 3. Tự động nâng cấp cột ha_cont nếu cơ sở dữ liệu cũ chưa có
     try:
         c.execute("SELECT ha_cont FROM shipments LIMIT 1")
     except sqlite3.OperationalError:
@@ -115,7 +115,7 @@ st.sidebar.header("➕ Thêm Hợp Đồng Mới")
 with st.sidebar.form("new_shipment_form", clear_on_submit=True):
     new_contract = st.text_input("Tên/Số Hợp Đồng *:")
     
-    # Menu chọn Tên hàng hóa mặc định linh hoạt
+    # Chọn Tên hàng hóa linh hoạt
     hang_options = [
         "Gạo (Rice)", 
         "Nông sản (Agricultural Products)", 
@@ -134,7 +134,7 @@ with st.sidebar.form("new_shipment_form", clear_on_submit=True):
     new_booking = st.text_input("Số Booking / B/L (Nếu có):")
     new_vessel = st.text_input("Tên Tàu / Số chuyến:")
     
-    # Menu chọn Nơi hạ Cont
+    # Chọn Nơi hạ Cont linh hoạt
     cang_options = ["Cát Lái", "SPITC", "Hiệp Phước", "Tân Cảng Hiệp Phước", "Đà Nẵng", "Hải Phòng", "Khác (Nhập tay bên dưới)"]
     selected_cang = st.selectbox("Chọn Cảng hạ Cont:", cang_options)
     custom_cang = st.text_input("Nếu chọn 'Khác', nhập tên cảng vào đây:")
@@ -179,8 +179,9 @@ else:
                 status_list.append(f"{cat}: 🟢")
                 
         status_string = " | ".join(status_list)
-            
-        display_data.append({
+        
+        # Gom dữ liệu hiển thị cực kỳ an toàn
+        row_data = {
             "Tên Hợp Đồng": ct,
             "Tên Hàng": row['cargo_name'],
             "Số Booking": row['booking_no'],
@@ -189,7 +190,47 @@ else:
             "Ngày ETA": row['eta'],
             "Tiến độ các Hạng mục": status_string,
             "Trạng thái": "✅ Hoàn tất" if row['is_completed'] == 1 else "⏳ Đang chạy"
-        })
+        }
+        display_data.append(row_data)
+        
     conn.close()
     
-    st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True
+    df_to_show = pd.DataFrame(display_data)
+    st.dataframe(df_to_show, use_container_width=True, hide_index=True)
+
+    # --- PHẦN XỬ LÝ CHI TIẾT VÀ TỰ THÊM MỤC CHÍNH/PHỤ ---
+    st.markdown("---")
+    st.subheader("🔍 Cập nhật & Tự chỉnh sửa cấu trúc tiến độ")
+    
+    selected_contract = st.selectbox("Chọn Hợp Đồng cần cập nhật hoặc thêm mục:", shipments_df['contract_name'].tolist())
+    
+    if selected_contract:
+        shipment_info = shipments_df[shipments_df['contract_name'] == selected_contract].iloc[0]
+        info_ha_cont = shipment_info['ha_cont'] if ('ha_cont' in shipment_info and shipment_info['ha_cont']) else "---"
+        st.markdown(f"Đang xem: **{selected_contract}** ({shipment_info['cargo_name']}) | Tàu: **{shipment_info['vessel']}** | **Nơi Hạ Cont: {info_ha_cont}** | ETA: **{shipment_info['eta']}**")
+        
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        
+        categories = get_categories_for_contract(selected_contract)
+        
+        # Form chính quản lý checklist
+        with st.form("checklist_form"):
+            all_checkboxes = {}
+            
+            for cat in categories:
+                with st.expander(f"📁 Hạng mục lớn: {cat}"):
+                    c.execute("SELECT id, task_name, is_done FROM tasks WHERE contract_name = ? AND category = ?", (selected_contract, cat))
+                    tasks = c.fetchall()
+                    
+                    if tasks:
+                        for task_id, task_name, is_done in tasks:
+                            all_checkboxes[task_id] = st.checkbox(task_name, value=bool(is_done), key=f"task_{task_id}")
+                    else:
+                        st.write("*Hạng mục này chưa có bước thực hiện nào.*")
+                        
+            save_changes = st.form_submit_button("💾 Lưu cập nhật tiến độ")
+            
+            if save_changes:
+                for t_id, checked in all_checkboxes.items():
+                    c.execute("UPDATE tasks SET is_done = ? WHERE
