@@ -66,7 +66,7 @@ def create_shipment(name, booking, vessel, eta):
         for category, task_list in default_tasks.items():
             for task in task_list:
                 c.execute("INSERT INTO tasks (booking_no, category, task_name, is_done) VALUES (?, ?, ?, 0)",
-                          (booking, category, task, 0))
+                          (booking, category, task))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
